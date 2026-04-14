@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Lafayette 7-Day Master</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <style>
+        :root { --green: #2ecc71; --yellow: #f1c40f; --red: #e74c3c; --blue: #3498db; --dark: #2c3e50; }
+        body { font-family: sans-serif; background: #f0f2f5; margin: 0; padding: 10px; color: var(--dark); }
+        .container { max-width: 900px; margin: 0 auto; }
+        header { text-align: center; padding: 10px; }
+        .day-section { 
+            background: white; border-radius: 12px; margin-bottom: 25px; 
+            overflow: hidden; box-shadow: 0 4px 12px rgba(0,0,0,0.1); 
+        }
+        .day-header { background: var(--dark); color: white; padding: 12px; font-weight: bold; }
+        .chart-container { height: 350px; width: 100%; position: relative; padding-bottom: 10px; }
+        .loading { text-align: center; padding: 50px; font-style: italic; color: #666; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <header>
+        <h1>Lafayette 7-Day Master</h1>
+        <p>Tap bars for hourly Temp & Weather</p>
+    </header>
+    <div id="app-output" class="loading">Syncing marine & weather data...</div>
+</div>
+
+<script>
+    const STATION_ID = '8638671';
+    const LAT = '36.88';
+    const LON = '-76.28';
+
+    const weatherMap = {
+        0: '☀️', 1: '🌤️', 2: '⛅', 3: '☁️', 45: '🌫️', 48: '🌫️',
+        51: '🌦️', 53: '🌦️', 55: '🌦️', 61: '🌧️', 63: '🌧️', 65: '🌧️',
+        71: '❄️', 80: '🚿', 95: '⛈️'
+    };
+
+    async function init() {
+        try {
+            const now = new Date();
+            const beginDate = now.toISOString().split('T')[0].replace(/-/g, '');
+
+            // Fetch 7-Day Wind, Temp, and Weather Code
+            const weatherUrl = `https://api.open-meteo.com/v1/forecast?latitude=${LAT}&longitude=${LON}&hourly=wind_speed_10m,temperature_2m,weather_code&wind_speed_unit=mph&temperature_unit=fahrenheit&timezone=auto&forecast_days=7`;
+            const weatherRes = await fetch(weatherUrl);
+            const wData = await weatherRes.json();
+
+            // Fetch 7-Day Tides
+            const tideUrl = `https://api.tidesandcurrents.noaa.gov/api/prod/datagetter?begin_date=${beginDate}&range=168&station=${STATION_ID}&product=predictions&datum=MLLW&time_zone=lst_ldt&interval=h&units=english&format=json`;
+            const tideRes = await fetch(tideUrl);
+            const tData = await tideRes.json();
+
+            renderCharts(wData.hourly, tData.predictions);
+        } catch (err) {
+            document.getElementById('app-output').innerHTML = 'Data Sync Failed.';
+        }
+    }
+
+    function renderCharts(w, t) {
+        const output = document.getElementById('app-output');
+        output.innerHTML = '';
+        
+        const days = {};
+        w.time.forEach((timeStr, i) => {
+            const dObj = new Date(timeStr);
+            const dKey = dObj.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' });
+            if (!days[dKey]) days[dKey] = { times: [], winds: [], tides: [], codes: [], temps: [] };
+            
+            const search = timeStr.replace('T', ' ').substring(0, 13);
+            const tMatch = t.find(item => item.t.startsWith(search));
+
+            days[dKey].times.push(dObj.toLocaleTimeString([], { hour: 'numeric' }));
+            days[dKey].winds.push(Math.round(w.wind_speed_10m[i]));
+            days[dKey].temps.push(Math.round(w.temperature_2m[i]));
+            days[dKey].codes.push(weatherMap[w.weather_code[i]] || '☁️');
+            days[dKey].tides.push(tMatch ? parseFloat(tMatch.v) : null);
+        });
+
+        for (const [dayLabel, data] of Object.entries(days)) {
+            const section = document.createElement('div');
+            section.className = 'day-section';
+            const chartId = `chart-${dayLabel.replace(/[^a-z0-9]/gi, '')}`;
+            section.innerHTML = `<div class="day-header">${dayLabel}</div><div class="chart-container"><canvas id="${chartId}"></canvas></div>`;
+            output.appendChild(section);
+
+            const windColors = data.winds.map(s => s <= 4 ? '#2ecc71' : (s <= 8 ? '#f1c40f' : '#e74c3c'));
+
+            new Chart(document.getElementById(chartId), {
+                type: 'bar',
+                data: {
+                    labels: data.times,
+                    datasets: [
+                        {
+                            label: 'Tide (ft)',
+                            data: data.tides,
+                            type: 'line',
+                            borderColor: '#3498db',
+                            backgroundColor: 'rgba(52, 152, 219, 0.3)',
+                            fill: true,
+                            tension: 0.4,
+                            yAxisID: 'yTide',
+                            pointRadius: 0
+                        },
+                        {
+                            label: 'Wind (mph)',
+                            data: data.winds,
+                            backgroundColor: windColors,
+                            yAxisID: 'yWind',
+                            barPercentage: 0.8
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        x: { grid: { display: false }, ticks: { font: { size: 9 } } },
+                        yTide: { type: 'linear', position: 'left', min: -1, max: 4, title: { display: true, text: 'Tide' } },
+                        yWind: { type: 'linear', position: 'right', min: 0, max: 20, grid: { display: false }, title: { display: true, text: 'Wind' } }
+                    },
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: {
+                            mode: 'index',
+                            intersect: false,
+                            backgroundColor: 'rgba(44, 62, 80, 0.9)',
+                            callbacks: {
+                                title: (items) => `${items[0].label} Forecast`,
+                                label: (ctx) => ` ${ctx.dataset.label}: ${ctx.formattedValue}${ctx.datasetIndex === 0 ? 'ft' : 'mph'}`,
+                                footer: (items) => {
+                                    const i = items[0].dataIndex;
+                                    return `Temp: ${data.temps[i]}°F\nSky: ${data.codes[i]}`;
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+    }
+    init();
+</script>
+</body>
+</html>
